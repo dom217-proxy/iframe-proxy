@@ -1,30 +1,48 @@
-const express = require('express');
-const request = require('request');
+import express from "express";
+import fetch from "node-fetch";
+import cors from "cors";
+
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Disable cache
-app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  next();
-});
+app.use(cors());
 
-// Main proxy endpoint
-app.get('/', (req, res) => {
+app.get("/", async (req, res) => {
   const targetUrl = req.query.url;
+
   if (!targetUrl) {
-    return res.status(400).send('Missing ?url=');
+    return res.status(400).send("Missing ?url=");
   }
 
-  // Add headers to make it look like a normal browser
-  request({
-    url: targetUrl,
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-  })
-    .on('error', (err) => res.status(500).send(err.message))
-    .pipe(res);
+  try {
+    const response = await fetch(targetUrl);
+    const contentType = response.headers.get("content-type");
+    let body = await response.text();
+
+    // If it’s HTML, rewrite relative asset paths
+    if (contentType && contentType.includes("text/html")) {
+      const base = new URL(targetUrl).origin + new URL(targetUrl).pathname.replace(/\/[^\/]*$/, "");
+      const proxyBase = `${req.protocol}://${req.get("host")}/?url=${base}/`;
+
+      // Rewrite src, href, and url() references
+      body = body
+        .replace(/(src|href)=["']([^"'#:]+)["']/g, (match, attr, path) => {
+          if (path.startsWith("data:") || path.startsWith("http")) return match;
+          return `${attr}="${proxyBase}${path}"`;
+        })
+        .replace(/url\(["']?([^"')#]+)["']?\)/g, (match, path) => {
+          if (path.startsWith("data:") || path.startsWith("http")) return match;
+          return `url(${proxyBase}${path})`;
+        });
+    }
+
+    res.set("content-type", contentType || "text/plain");
+    res.send(body);
+  } catch (err) {
+    res.status(500).send(`Proxy error: ${err.message}`);
+  }
 });
 
-const PORT = 8080;
 app.listen(PORT, () => {
-  console.log(`✅ Proxy running at http://localhost:${PORT}`);
+  console.log(`Proxy running on port ${PORT}`);
 });
